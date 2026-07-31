@@ -12,10 +12,10 @@ from datetime import date, timedelta
 # ==========================================
 st.set_page_config(page_title="Teacher Arrangement System", layout="wide")
 
-# Inject Custom CSS for Dropdown text wrapping, popover width, and app breadth
+# Removed the hacky matrix CSS grid. Kept only necessary fixes for dropdown text wrapping.
 st.markdown("""
     <style>
-    /* 1. Force text wrapping inside the SELECTED option of the selectbox */
+    /* Force text wrapping inside the SELECTED option of the selectbox */
     [data-baseweb="select"] > div {
         height: auto !important;
         min-height: 40px !important;
@@ -27,43 +27,19 @@ st.markdown("""
         line-height: 1.2 !important;
     }
     
-    /* 2. THE CSS BUG FIX: Force the Dropdown Popover to expand fully */
-    /* BaseWeb injects an inline 'width' style via JS matching the selectbox. We MUST override the div wrapper, not just the UL */
+    /* Force dropdown popover to expand fully for readability */
     div[data-baseweb="popover"] > div {
-        min-width: 470px !important; /* Force it to match your matrix column width */
+        min-width: 470px !important; 
         max-width: fit-content !important; 
-    }
-    div[data-baseweb="popover"] ul[data-baseweb="menu"] {
-        max-width: none !important; 
-        width: 100% !important;
     }
     div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] {
         height: auto !important;
-        min-height: 40px !important;
-        padding-top: 8px !important;
-        padding-bottom: 8px !important;
-        display: flex !important;
-        align-items: center !important;
+        padding: 8px !important;
         border-bottom: 1px solid #f0f2f6; 
     }
     div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] span {
         white-space: normal !important;
-        overflow-wrap: break-word !important;
         line-height: 1.3 !important;
-        width: 100% !important;
-    }
-    
-    /* 3. Increase Breadth (Width) of the entire app grid */
-    .block-container {
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-        max-width: 100% !important;
-    }
-    
-    /* Reduce gap between columns */
-    [data-testid="column"] {
-        padding-left: 0.3rem !important;
-        padding-right: 0.3rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -105,10 +81,8 @@ def save_schedule_to_db(schedule_dict):
 def load_data_from_db():
     rules = db.rules.find_one({"_id": "main_rules"})
     schedule = db.schedule.find_one({"_id": "main_schedule"})
-    
     if rules: rules.pop('_id', None)
     if schedule: schedule.pop('_id', None)
-        
     return rules, schedule
 
 def delete_schedule_from_db():
@@ -122,15 +96,11 @@ if 'initialized' not in st.session_state:
     
     st.session_state.rules = db_rules if db_rules else {"exceptions": [], "double_booking_exceptions": []}
     st.session_state.schedule = db_schedule
-    
-    if st.session_state.schedule:
-        st.session_state.phase = 'setup'
-    else:
-        st.session_state.phase = 'upload'
+    st.session_state.phase = 'setup' if st.session_state.schedule else 'upload'
         
     st.session_state.conflicts = []
     st.session_state.arrangements = {}
-    st.session_state.raw_file = None # Added for Fix 1.b
+    st.session_state.raw_file = None
     st.session_state.initialized = True
 
 # ==========================================
@@ -161,8 +131,7 @@ def parse_schedule(file_bytes):
 
     for _, row in df.iterrows():
         designation = str(row.iloc[0]).strip()
-        if not designation or designation.lower() in ['designation', 'post', 'teacher']:
-            continue
+        if not designation or designation.lower() in ['designation', 'post', 'teacher']: continue
             
         name = str(row.iloc[1]).strip()
         if name.lower() in ['name', 'teacher name']: name = ''
@@ -181,11 +150,9 @@ def parse_schedule(file_bytes):
             cell_val = str(row.iloc[col_idx]).strip()
             if not cell_val or cell_val.lower().startswith('period'): continue
 
-            # Updated regex to handle "10-A", "IX A", and days like "1, 2, 5"
             matches = re.finditer(r'([A-Za-z0-9\-\s]+?)\s*\(\s*([\d\-\s,]+)\s*\)', cell_val)
             for match in matches:
                 class_name = match.group(1).strip()
-                # Safely parse days whether they use commas or hyphens
                 days_assigned = re.split(r'[\s,\-]+', match.group(2).strip())
 
                 for day_num in days_assigned:
@@ -230,13 +197,6 @@ def get_target_date(day_name: str) -> str:
     return (date.today() + timedelta(days=days_ahead)).strftime("%d-%b-%Y")
 
 # ==========================================
-# CALLBACKS
-# ==========================================
-# FIX 1.c: State updater for selectbox to avoid manual st.rerun() logic
-def update_arrangement(state_key, widget_key):
-    st.session_state.arrangements[state_key] = st.session_state[widget_key]
-
-# ==========================================
 # UI PHASES
 # ==========================================
 def ui_upload():
@@ -246,9 +206,7 @@ def ui_upload():
 
     sched_file = st.file_uploader("Upload Schedule Excel (.xlsx)", type=["xlsx"])
     if sched_file and st.button("Process Schedule", type="primary"):
-        # FIX 1.b: Cache the file into session state immediately so we don't lose it
         st.session_state.raw_file = sched_file.getvalue()
-        
         sched, conf = parse_schedule(BytesIO(st.session_state.raw_file))
         if conf:
             st.session_state.conflicts = conf
@@ -263,33 +221,43 @@ def ui_upload():
 
 def ui_resolve():
     st.title("Resolve Schedule Conflicts")
-    st.warning(f"Found {len(st.session_state.conflicts)} conflicts. Please resolve them to continue.")
+    st.warning(f"Found {len(st.session_state.conflicts)} conflicts. Review and allow exceptions using the data editor below.")
     
+    # NEW: Utilize st.data_editor to batch-resolve conflicts natively
+    conf_data = []
     for i, c in enumerate(st.session_state.conflicts):
-        st.error(f"Conflict {i+1}: {c['type'].replace('_', ' ').title()} - Day: {c['day'].capitalize()} | Period: {c['period']}")
+        details = f"{c['teacher1']} vs {c['teacher2']} ({c['class_name']})" if c['type'] == 'clash' else f"{c['teacher']} ({c['class1']} & {c['class2']})"
+        conf_data.append({
+            "ID": i, "Type": c['type'].replace('_', ' ').title(), 
+            "Day": c['day'].capitalize(), "Period": c['period'], 
+            "Details": details, "Allow Exception": False
+        })
         
-        if c['type'] == 'clash':
-            st.write(f"Teachers: **{c['teacher1']}** & **{c['teacher2']}** mapped to Class **{c['class_name']}**")
-            if st.button(f"Allow & Add Rule (Clash {i+1})", key=f"btn_c_{i}"):
-                st.session_state.rules['exceptions'].append({
-                    "teacher1": c['teacher1'], "teacher2": c['teacher2'], "class_name": c['class_name']
-                })
-                save_rules_to_db(st.session_state.rules)
-                st.rerun()
-                
-        elif c['type'] == 'double_booking':
-            st.write(f"Teacher **{c['teacher']}** booked for **{c['class1']}** & **{c['class2']}**")
-            if st.button(f"Allow & Add Rule (DB {i+1})", key=f"btn_db_{i}"):
-                st.session_state.rules['double_booking_exceptions'].append({
-                    "teacher": c['teacher'], "class1": c['class1'], "class2": c['class2']
-                })
-                save_rules_to_db(st.session_state.rules)
-                st.rerun()
+    df_conflicts = pd.DataFrame(conf_data)
+    
+    edited_df = st.data_editor(
+        df_conflicts,
+        column_config={
+            "Allow Exception": st.column_config.CheckboxColumn("Allow Exception", help="Check to add rule and ignore this conflict")
+        },
+        disabled=["ID", "Type", "Day", "Period", "Details"],
+        hide_index=True,
+        use_container_width=True
+    )
 
     st.divider()
-    if st.button("Re-evaluate Schedule with new rules", type="primary"):
+    if st.button("Apply Rules & Re-evaluate Schedule", type="primary"):
+        allowed = edited_df[edited_df["Allow Exception"] == True]
+        for _, row in allowed.iterrows():
+            c = st.session_state.conflicts[row["ID"]]
+            if c['type'] == 'clash':
+                st.session_state.rules['exceptions'].append({"teacher1": c['teacher1'], "teacher2": c['teacher2'], "class_name": c['class_name']})
+            elif c['type'] == 'double_booking':
+                st.session_state.rules['double_booking_exceptions'].append({"teacher": c['teacher'], "class1": c['class1'], "class2": c['class2']})
+                
+        save_rules_to_db(st.session_state.rules)
+        
         if st.session_state.raw_file:
-            # FIX 1.b: Re-parse using the cached file in memory, no re-upload required
             sched, conf = parse_schedule(BytesIO(st.session_state.raw_file))
             if conf:
                 st.session_state.conflicts = conf
@@ -298,10 +266,6 @@ def ui_resolve():
                 st.session_state.schedule = sched
                 save_schedule_to_db(sched)
                 st.session_state.phase = 'setup'
-            st.rerun()
-        else:
-            st.error("File cache lost. Please upload again.")
-            st.session_state.phase = 'upload'
             st.rerun()
 
 def sidebar_menu():
@@ -313,27 +277,16 @@ def sidebar_menu():
             st.session_state.raw_file = None
             st.session_state.phase = 'upload'
             st.rerun()
-            
         st.divider()
         st.caption("Connected securely to MongoDB Atlas")
 
 def ui_setup():
     sidebar_menu()
     st.title("Select Day & Absentees")
-    st.success("Master schedule loaded from Cloud Database!")
-    
     st.session_state.selected_day = st.selectbox("Select Day:", ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"])
+    
     all_teachers = sorted(list(st.session_state.schedule.keys()))
-    
     st.session_state.absent_teachers = st.multiselect("Select Absent Teachers:", all_teachers)
-    
-    total_periods = 0
-    if st.session_state.absent_teachers:
-        for t in st.session_state.absent_teachers:
-            periods = st.session_state.schedule.get(t, {}).get(st.session_state.selected_day, {})
-            total_periods += len([p for p in periods.keys() if str(p).isdigit()])
-    
-    st.metric("Total Periods to Arrange", total_periods)
     
     if st.button("Continue to Arrangement", type="primary") and st.session_state.absent_teachers:
         st.session_state.phase = 'arrange'
@@ -341,21 +294,17 @@ def ui_setup():
 
 def compute_candidates(p_str, c_name, absent, day_schedule):
     busy_for_others = set()
-    assigned_in_period = {}
     extra_assignments = {t: 0 for t in st.session_state.schedule.keys()}
     
     for (a, p), sel in st.session_state.arrangements.items():
         if p == p_str and sel and sel != "Self Study":
-            if p not in assigned_in_period: assigned_in_period[p] = {}
             t_name = sel.split(" (")[0] if "(Co-teacher)" in sel or "(Combine w/" in sel else sel.rsplit(" (", 1)[0]
             if a != absent: busy_for_others.add(t_name)
             if "(Combine w/" not in sel and "(Co-teacher)" not in sel:
                 extra_assignments[t_name] = extra_assignments.get(t_name, 0) + 1
 
     candidates = ["Self Study"]
-    
-    co_teachers = day_schedule.get(p_str, {}).get(c_name, [])
-    for ct in co_teachers:
+    for ct in day_schedule.get(p_str, {}).get(c_name, []):
         if ct != absent and ct not in st.session_state.absent_teachers and ct not in busy_for_others:
             candidates.append(f"{ct} (Co-teacher)")
 
@@ -365,65 +314,24 @@ def compute_candidates(p_str, c_name, absent, day_schedule):
             class_num, section = int(match.group(1)), match.group(2).upper()
             if section:
                 parallel_class = f"{class_num}{'B' if section == 'A' else 'A'}"
-                parallel_teachers = day_schedule.get(p_str, {}).get(parallel_class, [])
-                for pt in parallel_teachers:
+                for pt in day_schedule.get(p_str, {}).get(parallel_class, []):
                     if pt not in st.session_state.absent_teachers and pt not in busy_for_others:
                         candidates.append(f"{pt} (Combine w/ {parallel_class})")
 
     free_list = []
     for t in st.session_state.schedule.keys():
-        if t in st.session_state.absent_teachers or str(p_str) in st.session_state.schedule[t].get(st.session_state.selected_day, {}) or t in busy_for_others:
-            continue
+        if t in st.session_state.absent_teachers or str(p_str) in st.session_state.schedule[t].get(st.session_state.selected_day, {}) or t in busy_for_others: continue
         base_load = len([x for x in st.session_state.schedule[t].get(st.session_state.selected_day, {}).keys() if str(x).isdigit()])
         free_list.append((t, base_load + extra_assignments.get(t, 0)))
 
-    # FIX 2.b: Deterministic sorting - primary by load, secondary by teacher name alphabetically
     free_list.sort(key=lambda x: (x[1], x[0]))
     candidates.extend([f"{t} ({load} periods)" for t, load in free_list])
-    
     return candidates
 
 def ui_arrange():
     sidebar_menu()
     day = st.session_state.selected_day
-    st.title(f"Make Arrangements ({day.capitalize()})")
-    
-    # CSS injected exclusively for the Arrangement Matrix layout to fix the scrolling logic
-    st.markdown("""
-        <style>
-        /* Force rows to not wrap */
-        [data-testid="stHorizontalBlock"] {
-            flex-wrap: nowrap !important;
-            gap: 0 !important; 
-        }
-        
-        /* The CSS Bug Fix - Make the PARENT vertical block handle horizontal overflow, NOT individual rows */
-        div[data-testid="stVerticalBlockBorderWrapper"] > div {
-            overflow-x: auto !important;
-        }
-
-        /* Uniform dimensions for every column cell in the matrix */
-        [data-testid="column"] {
-            min-width: 470px !important;
-            max-width: 470px !important;
-            flex: 0 0 470px !important;
-            padding: 15px 15px !important;
-            border-right: 1px solid #d3d3d3 !important;
-            border-bottom: 1px solid #d3d3d3 !important;
-        }
-        
-        [data-testid="column"]:first-child {
-            border-left: 1px solid #d3d3d3 !important;
-            background-color: #f7f9fc;
-        }
-        
-        .empty-cell {
-            text-align: center;
-            color: #a0a0a0;
-            margin-top: 15px;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+    st.title(f"Arrangements ({day.capitalize()})")
     
     day_schedule = {}
     max_period = 0
@@ -437,58 +345,60 @@ def ui_arrange():
                 
     if max_period == 0: max_period = 8
 
-    st.info("**Scroll horizontally and vertically** to view and assign all periods. All cells are uniformly sized.")
+    # NEW: Utilize st.dataframe to view the matrix natively (NO CSS HACKS)
+    st.subheader("Overview Matrix")
+    df_data = []
+    for absent in st.session_state.absent_teachers:
+        row = {"Absent Teacher": absent}
+        periods = st.session_state.schedule.get(absent, {}).get(day, {})
+        for p in range(1, max_period + 1):
+            p_str = str(p)
+            if p_str in periods:
+                c_name = periods[p_str]
+                current_sel = st.session_state.arrangements.get((absent, p_str), "Self Study")
+                display_text = f"{c_name} (Self Study)" if current_sel == "Self Study" else f"[{c_name}] → {current_sel.split(' (')[0]}"
+                row[f"Period {p}"] = display_text
+            else:
+                row[f"Period {p}"] = "—"
+        df_data.append(row)
+        
+    st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
 
-    with st.container(height=650):
-        # Header Row
-        cols = st.columns(max_period + 1)
-        cols[0].markdown("### Absent Teacher")
-        for p in range(1, max_period + 1): 
-            cols[p].markdown(f"### Period {p}")
-
-        # Data Rows
-        for absent in st.session_state.absent_teachers:
-            cols = st.columns(max_period + 1)
+    # NEW: Quick Assignment Editor UI
+    st.divider()
+    st.subheader("Assign Substitute")
+    col1, col2, col3 = st.columns([1.5, 1, 2])
+    
+    with col1:
+        edit_absent = st.selectbox("1. Select Absent Teacher", st.session_state.absent_teachers)
+        
+    active_periods = [str(p) for p in range(1, max_period + 1) if str(p) in st.session_state.schedule.get(edit_absent, {}).get(day, {})]
+    
+    with col2:
+        edit_period = st.selectbox("2. Select Period", active_periods) if active_periods else None
             
-            # Column 0: Absent Teacher Name
-            cols[0].markdown(f"**{absent}**")
+    with col3:
+        if edit_period:
+            c_name = st.session_state.schedule[edit_absent][day][edit_period]
+            state_key = (edit_absent, edit_period)
+            candidates = compute_candidates(edit_period, c_name, edit_absent, day_schedule)
+            current_val = st.session_state.arrangements.get(state_key, "Self Study")
             
-            periods = st.session_state.schedule.get(absent, {}).get(day, {})
+            idx = next((i for i, cand in enumerate(candidates) if cand.split(' (')[0] == current_val.split(' (')[0]), 0)
             
-            # Column 1 to N: Periods
-            for p in range(1, max_period + 1):
-                p_str = str(p)
-                with cols[p]:
-                    if p_str in periods:
-                        c_name = periods[p_str]
-                        st.caption(f"**Class:** {c_name}")
-                        
-                        state_key = (absent, p_str)
-                        candidates = compute_candidates(p_str, c_name, absent, day_schedule)
-                        
-                        current_val = st.session_state.arrangements.get(state_key, "Self Study")
-                        
-                        idx = 0
-                        for i, cand in enumerate(candidates):
-                            if cand.split(' (')[0] == current_val.split(' (')[0]:
-                                idx = i; break
-                                
-                        widget_key = f"sel_{absent}_{p}"
-                        # FIX 1.c: Use on_change callback instead of manual state management and st.rerun()
-                        st.selectbox(
-                            "Substitute", 
-                            candidates, 
-                            index=idx, 
-                            key=widget_key, 
-                            on_change=update_arrangement,
-                            args=(state_key, widget_key),
-                            label_visibility="collapsed"
-                        )
-                    else:
-                        st.markdown('<div class="empty-cell">— Free —</div>', unsafe_allow_html=True)
+            def update_single_arrangement():
+                st.session_state.arrangements[state_key] = st.session_state["active_dropdown"]
+            
+            st.selectbox(
+                f"3. Substitute for [ {c_name} ]", 
+                candidates, 
+                index=idx,
+                key="active_dropdown",
+                on_change=update_single_arrangement
+            )
 
     st.divider()
-    if st.button("Finalize & Export", type="primary", use_container_width=True):
+    if st.button("Finalize & Export Data", type="primary", use_container_width=True):
         st.session_state.max_period = max_period
         st.session_state.phase = 'export'
         st.rerun()
@@ -521,13 +431,7 @@ def generate_excel():
             arrangements_mapped[absent][p] = f"{c_name} - {sub_name}"
             detailed_assignments[sub_name][p] = f"{c_name} (Arrangement)"
 
-    data1 = []
-    for absent in sorted(arrangements_mapped.keys()):
-        row = {"Absent Teacher": absent}
-        for p in period_columns:
-            row[f"Period {p}"] = arrangements_mapped[absent].get(p, "") if p in st.session_state.schedule[absent].get(day, {}) else ""
-        data1.append(row)
-    df1 = pd.DataFrame(data1)
+    df1 = pd.DataFrame([{"Absent Teacher": a, **{f"Period {p}": arrangements_mapped[a].get(p, "") if p in st.session_state.schedule[a].get(day, {}) else "" for p in period_columns}} for a in sorted(arrangements_mapped.keys())])
 
     data2 = []
     active_subs = [t for t, assigns in detailed_assignments.items() if assigns]
@@ -556,17 +460,14 @@ def generate_excel():
             worksheet = writer.sheets['Daily Arrangement']
             worksheet.cell(row=table2_start, column=1, value="SUBSTITUTE TEACHER DAILY SCHEDULES (Printable)")
             df2.to_excel(writer, sheet_name='Daily Arrangement', index=False, startrow=table2_start)
-    
     return output.getvalue()
 
 def ui_export():
     sidebar_menu()
     st.title("Export Complete!")
-    st.success("Your schedule has been calculated successfully.")
     
     excel_data = generate_excel()
-    target_date = get_target_date(st.session_state.selected_day)
-    file_name = f"Arrangement_{st.session_state.selected_day.capitalize()}_{target_date}.xlsx"
+    file_name = f"Arrangement_{st.session_state.selected_day.capitalize()}_{get_target_date(st.session_state.selected_day)}.xlsx"
     
     st.download_button(
         label="Download Excel File",
