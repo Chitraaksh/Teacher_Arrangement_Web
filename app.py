@@ -25,12 +25,9 @@ MISC_KEYWORDS = [
 # ==========================================
 # DATABASE CONNECTION
 # ==========================================
-# st.cache_resource ensures we only connect to the database once
 @st.cache_resource
 def init_connection():
     try:
-        # Pulls the URI from the Streamlit Cloud Secrets we set up
-        # tlsCAFile=certifi.where() prevents SSL handshake errors on cloud platforms
         return pymongo.MongoClient(
             st.secrets["mongo"]["uri"], 
             serverSelectionTimeoutMS=5000,
@@ -41,7 +38,7 @@ def init_connection():
         st.stop()
 
 db_client = init_connection()
-db = db_client.teacher_arrangement # Creates a database called 'teacher_arrangement'
+db = db_client.teacher_arrangement
 
 def save_rules_to_db(rules_dict):
     db.rules.replace_one({"_id": "main_rules"}, rules_dict, upsert=True)
@@ -53,7 +50,6 @@ def load_data_from_db():
     rules = db.rules.find_one({"_id": "main_rules"})
     schedule = db.schedule.find_one({"_id": "main_schedule"})
     
-    # Remove the MongoDB internal IDs before using them
     if rules: rules.pop('_id', None)
     if schedule: schedule.pop('_id', None)
         
@@ -71,7 +67,6 @@ if 'initialized' not in st.session_state:
     st.session_state.rules = db_rules if db_rules else {"exceptions": [], "double_booking_exceptions": []}
     st.session_state.schedule = db_schedule
     
-    # If a schedule already exists in the cloud, skip straight to setup!
     if st.session_state.schedule:
         st.session_state.phase = 'setup'
     else:
@@ -138,7 +133,6 @@ def parse_schedule(uploaded_file):
                     if day_num not in DAYS_MAP: continue
                     day_name = DAYS_MAP[day_num]
                     
-                    # Double Booking
                     if period_num in schedule_data[teacher_key][day_name]:
                         existing_class = schedule_data[teacher_key][day_name][period_num]
                         if class_name not in existing_class.split(','):
@@ -155,7 +149,6 @@ def parse_schedule(uploaded_file):
 
                     if period_num not in inverted_index[day_name]: inverted_index[day_name][period_num] = {}
 
-                    # Clash
                     if class_name in inverted_index[day_name][period_num]:
                         existing_teacher = inverted_index[day_name][period_num][class_name]
                         if not is_clash_exception(existing_teacher, teacher_key, class_name):
@@ -196,7 +189,7 @@ def ui_upload():
             st.rerun()
         else:
             st.session_state.schedule = sched
-            save_schedule_to_db(sched) # Save successful parse to Cloud
+            save_schedule_to_db(sched)
             st.session_state.phase = 'setup'
             st.rerun()
 
@@ -213,7 +206,7 @@ def ui_resolve():
                 st.session_state.rules['exceptions'].append({
                     "teacher1": c['teacher1'], "teacher2": c['teacher2'], "class_name": c['class_name']
                 })
-                save_rules_to_db(st.session_state.rules) # Save rule to cloud
+                save_rules_to_db(st.session_state.rules)
                 st.rerun()
                 
         elif c['type'] == 'double_booking':
@@ -222,17 +215,15 @@ def ui_resolve():
                 st.session_state.rules['double_booking_exceptions'].append({
                     "teacher": c['teacher'], "class1": c['class1'], "class2": c['class2']
                 })
-                save_rules_to_db(st.session_state.rules) # Save rule to cloud
+                save_rules_to_db(st.session_state.rules)
                 st.rerun()
 
     st.divider()
-    st.write("If you prefer to correct the Excel file manually, please refresh the page and upload the corrected file.")
     if st.button("Re-evaluate Schedule with new rules"):
         st.session_state.phase = 'upload'
         st.rerun()
 
 def sidebar_menu():
-    """A sidebar to allow users to reset the schedule for a new term"""
     with st.sidebar:
         st.header("Database Controls")
         if st.button("Upload New Master Schedule (Reset)"):
@@ -267,13 +258,16 @@ def ui_setup():
         st.rerun()
 
 def compute_candidates(p_str, c_name, absent, day_schedule):
+    # Two-pass calculation matching GUI logic exactly
     busy_for_others = set()
+    assigned_in_period = {}
     extra_assignments = {t: 0 for t in st.session_state.schedule.keys()}
     
-    for key, sel in st.session_state.arrangements.items():
-        if key[1] == p_str and sel and sel != "Self Study":
+    for (a, p), sel in st.session_state.arrangements.items():
+        if p == p_str and sel and sel != "Self Study":
+            if p not in assigned_in_period: assigned_in_period[p] = {}
             t_name = sel.split(" (")[0] if "(Co-teacher)" in sel or "(Combine w/" in sel else sel.rsplit(" (", 1)[0]
-            if key[0] != absent: busy_for_others.add(t_name)
+            if a != absent: busy_for_others.add(t_name)
             if "(Combine w/" not in sel and "(Co-teacher)" not in sel:
                 extra_assignments[t_name] = extra_assignments.get(t_name, 0) + 1
 
@@ -351,7 +345,11 @@ def ui_arrange():
                             idx = i; break
                             
                     sel = st.selectbox("Substitute", candidates, index=idx, key=f"sel_{absent}_{p}", label_visibility="collapsed")
-                    st.session_state.arrangements[state_key] = sel
+                    
+                    # If selection changed, instantly save it and trigger a rerun so subsequent dropdowns update
+                    if st.session_state.arrangements.get(state_key) != sel:
+                        st.session_state.arrangements[state_key] = sel
+                        st.rerun()
                 else:
                     st.write("-")
 
@@ -370,6 +368,8 @@ def generate_excel():
     detailed_assignments = {t: {} for t in st.session_state.schedule.keys() if t not in st.session_state.absent_teachers}
 
     for (absent, p), selection in st.session_state.arrangements.items():
+        if absent not in st.session_state.schedule or day not in st.session_state.schedule[absent] or p not in st.session_state.schedule[absent][day]:
+            continue
         c_name = st.session_state.schedule[absent][day][p]
         if selection == "Self Study":
             arrangements_mapped[absent][p] = f"{c_name} - Self Study"
