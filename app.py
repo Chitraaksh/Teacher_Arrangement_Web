@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import re
 import pymongo
+import certifi
 from io import BytesIO
 from datetime import date, timedelta
 
@@ -29,9 +30,14 @@ MISC_KEYWORDS = [
 def init_connection():
     try:
         # Pulls the URI from the Streamlit Cloud Secrets we set up
-        return pymongo.MongoClient(st.secrets["mongo"]["uri"], serverSelectionTimeoutMS=5000)
+        # tlsCAFile=certifi.where() prevents SSL handshake errors on cloud platforms
+        return pymongo.MongoClient(
+            st.secrets["mongo"]["uri"], 
+            serverSelectionTimeoutMS=5000,
+            tlsCAFile=certifi.where()
+        )
     except Exception as e:
-        st.error("Could not connect to Database. Please check your Streamlit Secrets.")
+        st.error(f"Could not connect to Database. Please check your Streamlit Secrets. Error: {e}")
         st.stop()
 
 db_client = init_connection()
