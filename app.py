@@ -12,38 +12,6 @@ from datetime import date, timedelta
 # ==========================================
 st.set_page_config(page_title="Teacher Arrangement System", layout="wide")
 
-# Removed the hacky matrix CSS grid. Kept only necessary fixes for dropdown text wrapping.
-st.markdown("""
-    <style>
-    /* Force text wrapping inside the SELECTED option of the selectbox */
-    [data-baseweb="select"] > div {
-        height: auto !important;
-        min-height: 40px !important;
-    }
-    [data-baseweb="select"] span {
-        white-space: normal !important;
-        overflow-wrap: break-word !important;
-        display: block !important;
-        line-height: 1.2 !important;
-    }
-    
-    /* Force dropdown popover to expand fully for readability */
-    div[data-baseweb="popover"] > div {
-        min-width: 470px !important; 
-        max-width: fit-content !important; 
-    }
-    div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] {
-        height: auto !important;
-        padding: 8px !important;
-        border-bottom: 1px solid #f0f2f6; 
-    }
-    div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] span {
-        white-space: normal !important;
-        line-height: 1.3 !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 DAYS_MAP = {
     '1': 'monday', '2': 'tuesday', '3': 'wednesday', 
     '4': 'thursday', '5': 'friday', '6': 'saturday'
@@ -283,10 +251,20 @@ def sidebar_menu():
 def ui_setup():
     sidebar_menu()
     st.title("Select Day & Absentees")
-    st.session_state.selected_day = st.selectbox("Select Day:", ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"])
+    st.success("Master schedule loaded from Cloud Database!")
     
+    st.session_state.selected_day = st.selectbox("Select Day:", ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"])
     all_teachers = sorted(list(st.session_state.schedule.keys()))
+    
     st.session_state.absent_teachers = st.multiselect("Select Absent Teachers:", all_teachers)
+    
+    total_periods = 0
+    if st.session_state.absent_teachers:
+        for t in st.session_state.absent_teachers:
+            periods = st.session_state.schedule.get(t, {}).get(st.session_state.selected_day, {})
+            total_periods += len([p for p in periods.keys() if str(p).isdigit()])
+    
+    st.metric("Total Periods to Arrange", total_periods)
     
     if st.button("Continue to Arrangement", type="primary") and st.session_state.absent_teachers:
         st.session_state.phase = 'arrange'
@@ -333,6 +311,38 @@ def ui_arrange():
     day = st.session_state.selected_day
     st.title(f"Arrangements ({day.capitalize()})")
     
+    # Inject Custom CSS exclusively for the arrangement dropdowns
+    st.markdown("""
+        <style>
+        /* Force text wrapping inside the SELECTED option of the selectbox */
+        [data-baseweb="select"] > div {
+            height: auto !important;
+            min-height: 40px !important;
+        }
+        [data-baseweb="select"] span {
+            white-space: normal !important;
+            overflow-wrap: break-word !important;
+            display: block !important;
+            line-height: 1.2 !important;
+        }
+        
+        /* Force dropdown popover to expand fully for readability */
+        div[data-baseweb="popover"] > div {
+            min-width: 470px !important; 
+            max-width: fit-content !important; 
+        }
+        div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] {
+            height: auto !important;
+            padding: 8px !important;
+            border-bottom: 1px solid #f0f2f6; 
+        }
+        div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] span {
+            white-space: normal !important;
+            line-height: 1.3 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     day_schedule = {}
     max_period = 0
     for t, t_data in st.session_state.schedule.items():
@@ -411,25 +421,32 @@ def generate_excel():
     arrangements_mapped = {a: {} for a in st.session_state.absent_teachers}
     detailed_assignments = {t: {} for t in st.session_state.schedule.keys() if t not in st.session_state.absent_teachers}
 
-    for (absent, p), selection in st.session_state.arrangements.items():
-        if absent not in st.session_state.schedule or day not in st.session_state.schedule[absent] or p not in st.session_state.schedule[absent][day]:
-            continue
-        c_name = st.session_state.schedule[absent][day][p]
-        if selection == "Self Study":
-            arrangements_mapped[absent][p] = f"{c_name} - Self Study"
-        elif "(Co-teacher)" in selection:
-            sub_name = selection.split(" (")[0]
-            arrangements_mapped[absent][p] = f"{c_name} - {sub_name} (Co-teacher)"
-            detailed_assignments[sub_name][p] = f"{c_name} (Covering Co-teacher)"
-        elif "(Combine w/" in selection:
-            sub_name = selection.split(" (")[0]
-            parallel = selection.split("w/ ")[1].replace(")", "")
-            arrangements_mapped[absent][p] = f"{c_name} - {sub_name} (Combined w/ {parallel})"
-            detailed_assignments[sub_name][p] = f"{c_name} (Combined w/ {parallel})"
-        else:
-            sub_name = selection.rsplit(" (", 1)[0]
-            arrangements_mapped[absent][p] = f"{c_name} - {sub_name}"
-            detailed_assignments[sub_name][p] = f"{c_name} (Arrangement)"
+    # FIX: Loop through the actual schedule of absent teachers, not just the modified arrangements
+    for absent in st.session_state.absent_teachers:
+        periods = st.session_state.schedule.get(absent, {}).get(day, {})
+        for p, c_name in periods.items():
+            if not str(p).isdigit(): 
+                continue
+                
+            p_str = str(p)
+            # Default to "Self Study" if the user didn't explicitly change the dropdown
+            selection = st.session_state.arrangements.get((absent, p_str), "Self Study")
+            
+            if selection == "Self Study":
+                arrangements_mapped[absent][p_str] = f"{c_name} - Self Study"
+            elif "(Co-teacher)" in selection:
+                sub_name = selection.split(" (")[0]
+                arrangements_mapped[absent][p_str] = f"{c_name} - {sub_name} (Co-teacher)"
+                detailed_assignments[sub_name][p_str] = f"{c_name} (Covering Co-teacher)"
+            elif "(Combine w/" in selection:
+                sub_name = selection.split(" (")[0]
+                parallel = selection.split("w/ ")[1].replace(")", "")
+                arrangements_mapped[absent][p_str] = f"{c_name} - {sub_name} (Combined w/ {parallel})"
+                detailed_assignments[sub_name][p_str] = f"{c_name} (Combined w/ {parallel})"
+            else:
+                sub_name = selection.rsplit(" (", 1)[0]
+                arrangements_mapped[absent][p_str] = f"{c_name} - {sub_name}"
+                detailed_assignments[sub_name][p_str] = f"{c_name} (Arrangement)"
 
     df1 = pd.DataFrame([{"Absent Teacher": a, **{f"Period {p}": arrangements_mapped[a].get(p, "") if p in st.session_state.schedule[a].get(day, {}) else "" for p in period_columns}} for a in sorted(arrangements_mapped.keys())])
 
