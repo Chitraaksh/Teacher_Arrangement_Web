@@ -15,27 +15,48 @@ st.set_page_config(page_title="Teacher Arrangement System", page_icon="🏫", la
 # Inject Custom CSS for Dropdown text wrapping and breadth
 st.markdown("""
     <style>
-    /* 1. Force text wrapping inside the selected option of the selectbox */
-    div[data-baseweb="select"] > div, div[data-baseweb="select"] span {
-        white-space: normal !important;
-        word-break: break-word !important;
+    /* 1. Force text wrapping inside the SELECTED option of the selectbox */
+    [data-baseweb="select"] > div {
         height: auto !important;
-        min-height: 38px !important;
+        min-height: 40px !important;
     }
-    
-    /* 2. Force text wrapping inside the dropdown list options */
-    ul[role="listbox"] li {
+    [data-baseweb="select"] span {
         white-space: normal !important;
-        word-break: break-word !important;
         overflow-wrap: break-word !important;
-        height: auto !important;
-        padding-top: 10px !important;
-        padding-bottom: 10px !important;
-        line-height: 1.4 !important;
-        border-bottom: 1px solid #f0f2f6; /* Adds a faint line between options for readability */
+        display: block !important;
+        line-height: 1.2 !important;
     }
     
-    /* 3. Reduce column padding to give selectboxes more horizontal space (breadth) */
+    /* 2. Force text wrapping inside the DROPDOWN MENU options */
+    /* Streamlit renders the dropdown in a React Portal outside the main DOM, so we target the popover */
+    div[data-baseweb="popover"] ul[data-baseweb="menu"] {
+        max-width: 450px !important; /* Increase dropdown menu max-width */
+    }
+    div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] {
+        height: auto !important;
+        min-height: 40px !important;
+        padding-top: 8px !important;
+        padding-bottom: 8px !important;
+        display: flex !important;
+        align-items: center !important;
+        border-bottom: 1px solid #f0f2f6; /* Separation line */
+    }
+    div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] span {
+        white-space: normal !important;
+        overflow-wrap: break-word !important;
+        line-height: 1.3 !important;
+        width: 100% !important;
+    }
+    
+    /* 3. Increase Breadth (Width) of the entire app grid */
+    /* Removes huge margins on large screens so columns can stretch fully */
+    .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+    }
+    
+    /* Reduce gap between columns to maximize selectbox width */
     [data-testid="column"] {
         padding-left: 0.3rem !important;
         padding-right: 0.3rem !important;
@@ -349,12 +370,13 @@ def ui_arrange():
                 
     if max_period == 0: max_period = 8
 
-    cols = st.columns([2] + [1] * max_period)
+    # Adjusted weights: Gives Period columns a slightly larger share of the screen vs the Absent Teacher column
+    cols = st.columns([1.5] + [1.2] * max_period)
     cols[0].markdown("**Absent Teacher**")
     for p in range(1, max_period + 1): cols[p].markdown(f"**Period {p}**")
 
     for absent in st.session_state.absent_teachers:
-        cols = st.columns([2] + [1] * max_period)
+        cols = st.columns([1.5] + [1.2] * max_period)
         cols[0].write(absent)
         periods = st.session_state.schedule.get(absent, {}).get(day, {})
         
