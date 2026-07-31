@@ -12,7 +12,7 @@ from datetime import date, timedelta
 # ==========================================
 st.set_page_config(page_title="Teacher Arrangement System", layout="wide")
 
-# Inject Custom CSS for Dropdown text wrapping and breadth
+# Inject Custom CSS for Dropdown text wrapping, popover width, and app breadth
 st.markdown("""
     <style>
     /* 1. Force text wrapping inside the SELECTED option of the selectbox */
@@ -27,10 +27,15 @@ st.markdown("""
         line-height: 1.2 !important;
     }
     
-    /* 2. Force text wrapping inside the DROPDOWN MENU options */
-    /* Streamlit renders the dropdown in a React Portal outside the main DOM, so we target the popover */
+    /* 2. THE CSS BUG FIX: Force the Dropdown Popover to expand fully */
+    /* BaseWeb injects an inline 'width' style via JS matching the selectbox. We MUST override the div wrapper, not just the UL */
+    div[data-baseweb="popover"] > div {
+        min-width: 470px !important; /* Force it to match your matrix column width */
+        max-width: fit-content !important; 
+    }
     div[data-baseweb="popover"] ul[data-baseweb="menu"] {
-        max-width: 450px !important; /* Increase dropdown menu max-width */
+        max-width: none !important; 
+        width: 100% !important;
     }
     div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] {
         height: auto !important;
@@ -39,7 +44,7 @@ st.markdown("""
         padding-bottom: 8px !important;
         display: flex !important;
         align-items: center !important;
-        border-bottom: 1px solid #f0f2f6; /* Separation line */
+        border-bottom: 1px solid #f0f2f6; 
     }
     div[data-baseweb="popover"] ul[data-baseweb="menu"] li[role="option"] span {
         white-space: normal !important;
@@ -49,14 +54,13 @@ st.markdown("""
     }
     
     /* 3. Increase Breadth (Width) of the entire app grid */
-    /* Removes huge margins on large screens so columns can stretch fully */
     .block-container {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
         max-width: 100% !important;
     }
     
-    /* Reduce gap between columns to maximize selectbox width */
+    /* Reduce gap between columns */
     [data-testid="column"] {
         padding-left: 0.3rem !important;
         padding-right: 0.3rem !important;
@@ -126,6 +130,7 @@ if 'initialized' not in st.session_state:
         
     st.session_state.conflicts = []
     st.session_state.arrangements = {}
+    st.session_state.raw_file = None # Added for Fix 1.b
     st.session_state.initialized = True
 
 # ==========================================
@@ -148,8 +153,8 @@ def is_double_booking_exception(teacher: str, class1: str, class2: str) -> bool:
                 return True
     return False
 
-def parse_schedule(uploaded_file):
-    df = pd.read_excel(uploaded_file, dtype=str, header=None).fillna('')
+def parse_schedule(file_bytes):
+    df = pd.read_excel(file_bytes, dtype=str, header=None).fillna('')
     schedule_data = {}
     inverted_index = {day: {} for day in DAYS_MAP.values()}
     conflicts = []
@@ -176,10 +181,12 @@ def parse_schedule(uploaded_file):
             cell_val = str(row.iloc[col_idx]).strip()
             if not cell_val or cell_val.lower().startswith('period'): continue
 
-            matches = re.finditer(r'([A-Za-z0-9]+)\s*\(\s*([\d\-\s]+)\s*\)', cell_val)
+            # Updated regex to handle "10-A", "IX A", and days like "1, 2, 5"
+            matches = re.finditer(r'([A-Za-z0-9\-\s]+?)\s*\(\s*([\d\-\s,]+)\s*\)', cell_val)
             for match in matches:
                 class_name = match.group(1).strip()
-                days_assigned = re.split(r'\s*-\s*', match.group(2).strip())
+                # Safely parse days whether they use commas or hyphens
+                days_assigned = re.split(r'[\s,\-]+', match.group(2).strip())
 
                 for day_num in days_assigned:
                     if day_num not in DAYS_MAP: continue
@@ -223,17 +230,26 @@ def get_target_date(day_name: str) -> str:
     return (date.today() + timedelta(days=days_ahead)).strftime("%d-%b-%Y")
 
 # ==========================================
+# CALLBACKS
+# ==========================================
+# FIX 1.c: State updater for selectbox to avoid manual st.rerun() logic
+def update_arrangement(state_key, widget_key):
+    st.session_state.arrangements[state_key] = st.session_state[widget_key]
+
+# ==========================================
 # UI PHASES
 # ==========================================
 def ui_upload():
     st.title("Teacher Arrangement System")
     st.write("Upload your master schedule to begin.")
-    
     st.info("Since this is connected to a cloud database, you only need to do this once per school term! Your data will be saved securely.")
 
     sched_file = st.file_uploader("Upload Schedule Excel (.xlsx)", type=["xlsx"])
     if sched_file and st.button("Process Schedule", type="primary"):
-        sched, conf = parse_schedule(sched_file)
+        # FIX 1.b: Cache the file into session state immediately so we don't lose it
+        st.session_state.raw_file = sched_file.getvalue()
+        
+        sched, conf = parse_schedule(BytesIO(st.session_state.raw_file))
         if conf:
             st.session_state.conflicts = conf
             st.session_state.temp_schedule = sched
@@ -271,9 +287,22 @@ def ui_resolve():
                 st.rerun()
 
     st.divider()
-    if st.button("Re-evaluate Schedule with new rules"):
-        st.session_state.phase = 'upload'
-        st.rerun()
+    if st.button("Re-evaluate Schedule with new rules", type="primary"):
+        if st.session_state.raw_file:
+            # FIX 1.b: Re-parse using the cached file in memory, no re-upload required
+            sched, conf = parse_schedule(BytesIO(st.session_state.raw_file))
+            if conf:
+                st.session_state.conflicts = conf
+                st.session_state.temp_schedule = sched
+            else:
+                st.session_state.schedule = sched
+                save_schedule_to_db(sched)
+                st.session_state.phase = 'setup'
+            st.rerun()
+        else:
+            st.error("File cache lost. Please upload again.")
+            st.session_state.phase = 'upload'
+            st.rerun()
 
 def sidebar_menu():
     with st.sidebar:
@@ -281,6 +310,7 @@ def sidebar_menu():
         if st.button("Upload New Master Schedule (Reset)"):
             delete_schedule_from_db()
             st.session_state.schedule = None
+            st.session_state.raw_file = None
             st.session_state.phase = 'upload'
             st.rerun()
             
@@ -310,7 +340,6 @@ def ui_setup():
         st.rerun()
 
 def compute_candidates(p_str, c_name, absent, day_schedule):
-    # Two-pass calculation matching GUI logic exactly
     busy_for_others = set()
     assigned_in_period = {}
     extra_assignments = {t: 0 for t in st.session_state.schedule.keys()}
@@ -348,7 +377,8 @@ def compute_candidates(p_str, c_name, absent, day_schedule):
         base_load = len([x for x in st.session_state.schedule[t].get(st.session_state.selected_day, {}).keys() if str(x).isdigit()])
         free_list.append((t, base_load + extra_assignments.get(t, 0)))
 
-    free_list.sort(key=lambda x: x[1])
+    # FIX 2.b: Deterministic sorting - primary by load, secondary by teacher name alphabetically
+    free_list.sort(key=lambda x: (x[1], x[0]))
     candidates.extend([f"{t} ({load} periods)" for t, load in free_list])
     
     return candidates
@@ -358,16 +388,20 @@ def ui_arrange():
     day = st.session_state.selected_day
     st.title(f"Make Arrangements ({day.capitalize()})")
     
-    # Matrix Layout CSS injected exclusively for the Arrangement phase
+    # CSS injected exclusively for the Arrangement Matrix layout to fix the scrolling logic
     st.markdown("""
         <style>
-        /* Force rows to not wrap, creating horizontal overflow */
+        /* Force rows to not wrap */
         [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             gap: 0 !important; 
-            overflow-x: auto !important;
         }
         
+        /* The CSS Bug Fix - Make the PARENT vertical block handle horizontal overflow, NOT individual rows */
+        div[data-testid="stVerticalBlockBorderWrapper"] > div {
+            overflow-x: auto !important;
+        }
+
         /* Uniform dimensions for every column cell in the matrix */
         [data-testid="column"] {
             min-width: 470px !important;
@@ -378,13 +412,11 @@ def ui_arrange():
             border-bottom: 1px solid #d3d3d3 !important;
         }
         
-        /* Add left border to the first column to close the grid */
         [data-testid="column"]:first-child {
             border-left: 1px solid #d3d3d3 !important;
             background-color: #f7f9fc;
         }
         
-        /* Center the text in empty cells */
         .empty-cell {
             text-align: center;
             color: #a0a0a0;
@@ -407,7 +439,6 @@ def ui_arrange():
 
     st.info("**Scroll horizontally and vertically** to view and assign all periods. All cells are uniformly sized.")
 
-    # Matrix Container with fixed height for vertical and horizontal scrolling
     with st.container(height=650):
         # Header Row
         cols = st.columns(max_period + 1)
@@ -442,14 +473,18 @@ def ui_arrange():
                             if cand.split(' (')[0] == current_val.split(' (')[0]:
                                 idx = i; break
                                 
-                        sel = st.selectbox("Substitute", candidates, index=idx, key=f"sel_{absent}_{p}", label_visibility="collapsed")
-                        
-                        # If selection changed, instantly save it and trigger a rerun so subsequent dropdowns update
-                        if st.session_state.arrangements.get(state_key) != sel:
-                            st.session_state.arrangements[state_key] = sel
-                            st.rerun()
+                        widget_key = f"sel_{absent}_{p}"
+                        # FIX 1.c: Use on_change callback instead of manual state management and st.rerun()
+                        st.selectbox(
+                            "Substitute", 
+                            candidates, 
+                            index=idx, 
+                            key=widget_key, 
+                            on_change=update_arrangement,
+                            args=(state_key, widget_key),
+                            label_visibility="collapsed"
+                        )
                     else:
-                        # Replaces the basic '-' with a visually styled empty block
                         st.markdown('<div class="empty-cell">— Free —</div>', unsafe_allow_html=True)
 
     st.divider()
@@ -503,7 +538,7 @@ def generate_excel():
             if p in detailed_assignments[sub]:
                 row[f"Period {p}"] = detailed_assignments[sub][p]
                 engaged_count += 1
-            elif p in st.session_state.schedule[sub].get(day, {}):
+            elif p in st.session_state.schedule.get(sub, {}).get(day, {}):
                 row[f"Period {p}"] = st.session_state.schedule[sub][day][p]
                 engaged_count += 1
             else:
