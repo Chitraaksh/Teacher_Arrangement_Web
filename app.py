@@ -365,13 +365,14 @@ def ui_arrange():
         [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             gap: 0 !important; 
+            overflow-x: auto !important;
         }
         
         /* Uniform dimensions for every column cell in the matrix */
         [data-testid="column"] {
-            min-width: 320px !important;
-            max-width: 320px !important;
-            flex: 0 0 320px !important;
+            min-width: 370px !important;
+            max-width: 370px !important;
+            flex: 0 0 370px !important;
             padding: 15px 15px !important;
             border-right: 1px solid #d3d3d3 !important;
             border-bottom: 1px solid #d3d3d3 !important;
