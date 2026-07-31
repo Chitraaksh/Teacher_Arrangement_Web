@@ -11,77 +11,88 @@ from datetime import date, timedelta
 # ==========================================
 st.set_page_config(page_title="Teacher Arrangement System", page_icon="🏫", layout="wide")
 
-DAYS_MAP = {'1': 'monday', '2': 'tuesday', '3': 'wednesday', '4': 'thursday', '5': 'friday', '6': 'saturday'}
-MISC_KEYWORDS = ["TGT-ART", "TGT-MUSIC", "PET(M)", "PET(F)", "LIBRARIAN", "TGT-CS", "PGT-CS", "COUNSELOR", "SKILL/IT"]
+DAYS_MAP = {
+    '1': 'monday', '2': 'tuesday', '3': 'wednesday', 
+    '4': 'thursday', '5': 'friday', '6': 'saturday'
+}
+
+MISC_KEYWORDS = [
+    "TGT-ART", "TGT-MUSIC", "PET(M)", "PET(F)", "LIBRARIAN", 
+    "TGT-CS", "PGT-CS", "COUNSELOR", "SKILL/IT"
+]
 
 # ==========================================
 # DATABASE CONNECTION
 # ==========================================
+# st.cache_resource ensures we only connect to the database once
 @st.cache_resource
 def init_connection():
-    """Initializes the MongoDB connection using Streamlit Secrets."""
-    return pymongo.MongoClient(st.secrets["MONGO_URI"])
-
-def get_db_collection():
-    client = init_connection()
-    return client.school_db.app_data
-
-def load_from_cloud():
-    """Fetches data. Returns True if successful, False otherwise."""
     try:
-        collection = get_db_collection()
-        data = collection.find_one({"_id": "master_schedule"})
-        if data and data.get("schedule"):
-            st.session_state.schedule = data.get("schedule")
-            st.session_state.rules = data.get("rules", {"exceptions": [], "double_booking_exceptions": []})
-            return True
+        # Pulls the URI from the Streamlit Cloud Secrets we set up
+        return pymongo.MongoClient(st.secrets["mongo"]["uri"], serverSelectionTimeoutMS=5000)
     except Exception as e:
-        print(f"DB Load Error: {e}")
-    return False
+        st.error("Could not connect to Database. Please check your Streamlit Secrets.")
+        st.stop()
 
-def save_to_cloud():
-    """Saves current state to MongoDB."""
-    collection = get_db_collection()
-    collection.update_one(
-        {"_id": "master_schedule"},
-        {"$set": {
-            "schedule": st.session_state.schedule,
-            "rules": st.session_state.rules
-        }},
-        upsert=True
-    )
+db_client = init_connection()
+db = db_client.teacher_arrangement # Creates a database called 'teacher_arrangement'
+
+def save_rules_to_db(rules_dict):
+    db.rules.replace_one({"_id": "main_rules"}, rules_dict, upsert=True)
+
+def save_schedule_to_db(schedule_dict):
+    db.schedule.replace_one({"_id": "main_schedule"}, schedule_dict, upsert=True)
+
+def load_data_from_db():
+    rules = db.rules.find_one({"_id": "main_rules"})
+    schedule = db.schedule.find_one({"_id": "main_schedule"})
+    
+    # Remove the MongoDB internal IDs before using them
+    if rules: rules.pop('_id', None)
+    if schedule: schedule.pop('_id', None)
+        
+    return rules, schedule
+
+def delete_schedule_from_db():
+    db.schedule.delete_one({"_id": "main_schedule"})
 
 # ==========================================
-# SESSION STATE INITIALIZATION & AUTO-LOAD
+# SESSION STATE INITIALIZATION
 # ==========================================
 if 'initialized' not in st.session_state:
-    st.session_state.initialized = True
-    st.session_state.schedule = None
-    st.session_state.rules = {"exceptions": [], "double_booking_exceptions": []}
-    st.session_state.conflicts = []
-    st.session_state.arrangements = {}
-
-    # EXACT LOGIC: If found in DB, go to main app. Else ask for upload.
-    if load_from_cloud():
+    db_rules, db_schedule = load_data_from_db()
+    
+    st.session_state.rules = db_rules if db_rules else {"exceptions": [], "double_booking_exceptions": []}
+    st.session_state.schedule = db_schedule
+    
+    # If a schedule already exists in the cloud, skip straight to setup!
+    if st.session_state.schedule:
         st.session_state.phase = 'setup'
     else:
         st.session_state.phase = 'upload'
+        
+    st.session_state.conflicts = []
+    st.session_state.arrangements = {}
+    st.session_state.initialized = True
 
 # ==========================================
-# CORE ENGINE / PARSING LOGIC (excel_parser.py)
+# CORE ENGINE / PARSING LOGIC
 # ==========================================
 def is_clash_exception(teacher1: str, teacher2: str, class_name: str) -> bool:
     c_name = str(class_name).upper()
     for exc in st.session_state.rules.get("exceptions", []):
-        if exc["class_name"].upper() == c_name and {exc["teacher1"], exc["teacher2"]} == {teacher1, teacher2}:
-            return True
+        if exc["class_name"].upper() == c_name:
+            if {exc["teacher1"], exc["teacher2"]} == {teacher1, teacher2}:
+                return True
     return False
 
 def is_double_booking_exception(teacher: str, class1: str, class2: str) -> bool:
-    t, c1, c2 = teacher.upper(), str(class1).upper(), str(class2).upper()
+    t = teacher.upper()
+    c1, c2 = str(class1).upper(), str(class2).upper()
     for exc in st.session_state.rules.get("double_booking_exceptions", []):
-        if exc["teacher"].upper() == t and {exc["class1"].upper(), exc["class2"].upper()} == {c1, c2}:
-            return True
+        if exc["teacher"].upper() == t:
+            if {exc["class1"].upper(), exc["class2"].upper()} == {c1, c2}:
+                return True
     return False
 
 def parse_schedule(uploaded_file):
@@ -92,13 +103,19 @@ def parse_schedule(uploaded_file):
 
     for _, row in df.iterrows():
         designation = str(row.iloc[0]).strip()
-        if not designation or designation.lower() in ['designation', 'post', 'teacher']: continue
+        if not designation or designation.lower() in ['designation', 'post', 'teacher']:
+            continue
+            
         name = str(row.iloc[1]).strip()
         if name.lower() in ['name', 'teacher name']: name = ''
-
-        teacher_key = f"{designation} {name}".strip()
-        schedule_data[teacher_key] = {'category': "miscellaneous" if any(kw in designation.upper() for kw in MISC_KEYWORDS) else "main"}
+            
+        teacher_key = f"{designation} {name}".strip() 
+        schedule_data[teacher_key] = {'category': 'main'}
+        
         if name: schedule_data[teacher_key]['name'] = name
+        if any(kw in designation.upper() for kw in MISC_KEYWORDS):
+            schedule_data[teacher_key]['category'] = "miscellaneous"
+            
         for day in DAYS_MAP.values(): schedule_data[teacher_key][day] = {}
 
         for col_idx in range(2, len(df.columns)):
@@ -106,17 +123,25 @@ def parse_schedule(uploaded_file):
             cell_val = str(row.iloc[col_idx]).strip()
             if not cell_val or cell_val.lower().startswith('period'): continue
 
-            for match in re.finditer(r'([A-Za-z0-9]+)\s*\(\s*([\d\-\s]+)\s*\)', cell_val):
+            matches = re.finditer(r'([A-Za-z0-9]+)\s*\(\s*([\d\-\s]+)\s*\)', cell_val)
+            for match in matches:
                 class_name = match.group(1).strip()
-                for day_num in re.split(r'\s*-\s*', match.group(2).strip()):
+                days_assigned = re.split(r'\s*-\s*', match.group(2).strip())
+
+                for day_num in days_assigned:
                     if day_num not in DAYS_MAP: continue
                     day_name = DAYS_MAP[day_num]
-
+                    
+                    # Double Booking
                     if period_num in schedule_data[teacher_key][day_name]:
                         existing_class = schedule_data[teacher_key][day_name][period_num]
                         if class_name not in existing_class.split(','):
                             if not is_double_booking_exception(teacher_key, existing_class, class_name):
-                                conflicts.append({"type": "double_booking", "teacher": teacher_key, "class1": existing_class, "class2": class_name, "day": day_name, "period": period_num})
+                                conflicts.append({
+                                    "type": "double_booking", "teacher": teacher_key, 
+                                    "class1": existing_class, "class2": class_name, 
+                                    "day": day_name, "period": period_num
+                                })
                                 continue
                             else:
                                 schedule_data[teacher_key][day_name][period_num] = f"{existing_class},{class_name}"
@@ -124,14 +149,20 @@ def parse_schedule(uploaded_file):
 
                     if period_num not in inverted_index[day_name]: inverted_index[day_name][period_num] = {}
 
+                    # Clash
                     if class_name in inverted_index[day_name][period_num]:
                         existing_teacher = inverted_index[day_name][period_num][class_name]
                         if not is_clash_exception(existing_teacher, teacher_key, class_name):
-                            conflicts.append({"type": "clash", "teacher1": existing_teacher, "teacher2": teacher_key, "class_name": class_name, "day": day_name, "period": period_num})
+                            conflicts.append({
+                                "type": "clash", "teacher1": existing_teacher, 
+                                "teacher2": teacher_key, "class_name": class_name, 
+                                "day": day_name, "period": period_num
+                            })
                             continue
-
+                    
                     inverted_index[day_name][period_num][class_name] = teacher_key
                     schedule_data[teacher_key][day_name][period_num] = class_name
+
     return schedule_data, conflicts
 
 def get_target_date(day_name: str) -> str:
@@ -145,9 +176,11 @@ def get_target_date(day_name: str) -> str:
 # ==========================================
 def ui_upload():
     st.title("Teacher Arrangement System")
-    st.warning("No Master Schedule found in the cloud Database. Please upload an Excel schedule to begin.")
+    st.write("Upload your master schedule to begin.")
+    
+    st.info("Since this is connected to a cloud database, you only need to do this once per school term! Your data will be saved securely.")
 
-    sched_file = st.file_uploader("Upload Master Schedule (.xlsx)", type=["xlsx"])
+    sched_file = st.file_uploader("Upload Schedule Excel (.xlsx)", type=["xlsx"])
     if sched_file and st.button("Process Schedule", type="primary"):
         sched, conf = parse_schedule(sched_file)
         if conf:
@@ -157,69 +190,80 @@ def ui_upload():
             st.rerun()
         else:
             st.session_state.schedule = sched
-            save_to_cloud() # Instantly back it up
+            save_schedule_to_db(sched) # Save successful parse to Cloud
             st.session_state.phase = 'setup'
             st.rerun()
 
 def ui_resolve():
     st.title("Resolve Schedule Conflicts")
-    st.warning(f"Found {len(st.session_state.conflicts)} conflicts.")
-
+    st.warning(f"Found {len(st.session_state.conflicts)} conflicts. Please resolve them to continue.")
+    
     for i, c in enumerate(st.session_state.conflicts):
         st.error(f"Conflict {i+1}: {c['type'].replace('_', ' ').title()} - Day: {c['day'].capitalize()} | Period: {c['period']}")
+        
         if c['type'] == 'clash':
             st.write(f"Teachers: **{c['teacher1']}** & **{c['teacher2']}** mapped to Class **{c['class_name']}**")
             if st.button(f"Allow & Add Rule (Clash {i+1})", key=f"btn_c_{i}"):
-                st.session_state.rules['exceptions'].append({"teacher1": c['teacher1'], "teacher2": c['teacher2'], "class_name": c['class_name']})
+                st.session_state.rules['exceptions'].append({
+                    "teacher1": c['teacher1'], "teacher2": c['teacher2'], "class_name": c['class_name']
+                })
+                save_rules_to_db(st.session_state.rules) # Save rule to cloud
                 st.rerun()
+                
         elif c['type'] == 'double_booking':
             st.write(f"Teacher **{c['teacher']}** booked for **{c['class1']}** & **{c['class2']}**")
             if st.button(f"Allow & Add Rule (DB {i+1})", key=f"btn_db_{i}"):
-                st.session_state.rules['double_booking_exceptions'].append({"teacher": c['teacher'], "class1": c['class1'], "class2": c['class2']})
+                st.session_state.rules['double_booking_exceptions'].append({
+                    "teacher": c['teacher'], "class1": c['class1'], "class2": c['class2']
+                })
+                save_rules_to_db(st.session_state.rules) # Save rule to cloud
                 st.rerun()
 
     st.divider()
+    st.write("If you prefer to correct the Excel file manually, please refresh the page and upload the corrected file.")
     if st.button("Re-evaluate Schedule with new rules"):
         st.session_state.phase = 'upload'
         st.rerun()
 
-def ui_setup():
-    st.title("Select Day & Absentees")
-
+def sidebar_menu():
+    """A sidebar to allow users to reset the schedule for a new term"""
     with st.sidebar:
-        st.header("Workspace Data")
-        st.success("Currently connected to Cloud Workspace.")
-        if st.button("💾 Force Save to Cloud"):
-            save_to_cloud()
-            st.toast("Data synchronized to MongoDB!", icon="✅")
-
-        st.divider()
-        st.write("Need to upload a new master schedule?")
-        if st.button("Upload New Excel"):
+        st.header("Database Controls")
+        if st.button("Upload New Master Schedule (Reset)"):
+            delete_schedule_from_db()
+            st.session_state.schedule = None
             st.session_state.phase = 'upload'
             st.rerun()
+            
+        st.divider()
+        st.caption("Connected securely to MongoDB Atlas")
 
+def ui_setup():
+    sidebar_menu()
+    st.title("Select Day & Absentees")
+    st.success("Master schedule loaded from Cloud Database!")
+    
     st.session_state.selected_day = st.selectbox("Select Day:", ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"])
     all_teachers = sorted(list(st.session_state.schedule.keys()))
+    
     st.session_state.absent_teachers = st.multiselect("Select Absent Teachers:", all_teachers)
-
+    
     total_periods = 0
     if st.session_state.absent_teachers:
         for t in st.session_state.absent_teachers:
             periods = st.session_state.schedule.get(t, {}).get(st.session_state.selected_day, {})
             total_periods += len([p for p in periods.keys() if str(p).isdigit()])
-
+    
     st.metric("Total Periods to Arrange", total_periods)
-
+    
     if st.button("Continue to Arrangement", type="primary") and st.session_state.absent_teachers:
         st.session_state.phase = 'arrange'
         st.rerun()
 
-# EXACT PORT of gui.py -> refresh_all_comboboxes()
 def compute_candidates(p_str, c_name, absent, day_schedule):
     busy_for_others = set()
     extra_assignments = {t: 0 for t in st.session_state.schedule.keys()}
-
+    
     for key, sel in st.session_state.arrangements.items():
         if key[1] == p_str and sel and sel != "Self Study":
             t_name = sel.split(" (")[0] if "(Co-teacher)" in sel or "(Combine w/" in sel else sel.rsplit(" (", 1)[0]
@@ -228,7 +272,9 @@ def compute_candidates(p_str, c_name, absent, day_schedule):
                 extra_assignments[t_name] = extra_assignments.get(t_name, 0) + 1
 
     candidates = ["Self Study"]
-    for ct in day_schedule.get(p_str, {}).get(c_name, []):
+    
+    co_teachers = day_schedule.get(p_str, {}).get(c_name, [])
+    for ct in co_teachers:
         if ct != absent and ct not in st.session_state.absent_teachers and ct not in busy_for_others:
             candidates.append(f"{ct} (Co-teacher)")
 
@@ -238,7 +284,8 @@ def compute_candidates(p_str, c_name, absent, day_schedule):
             class_num, section = int(match.group(1)), match.group(2).upper()
             if section:
                 parallel_class = f"{class_num}{'B' if section == 'A' else 'A'}"
-                for pt in day_schedule.get(p_str, {}).get(parallel_class, []):
+                parallel_teachers = day_schedule.get(p_str, {}).get(parallel_class, [])
+                for pt in parallel_teachers:
                     if pt not in st.session_state.absent_teachers and pt not in busy_for_others:
                         candidates.append(f"{pt} (Combine w/ {parallel_class})")
 
@@ -251,12 +298,14 @@ def compute_candidates(p_str, c_name, absent, day_schedule):
 
     free_list.sort(key=lambda x: x[1])
     candidates.extend([f"{t} ({load} periods)" for t, load in free_list])
+    
     return candidates
 
 def ui_arrange():
+    sidebar_menu()
     day = st.session_state.selected_day
     st.title(f"Make Arrangements ({day.capitalize()})")
-
+    
     day_schedule = {}
     max_period = 0
     for t, t_data in st.session_state.schedule.items():
@@ -266,6 +315,7 @@ def ui_arrange():
                 if p not in day_schedule: day_schedule[p] = {}
                 if c not in day_schedule[p]: day_schedule[p][c] = []
                 day_schedule[p][c].append(t)
+                
     if max_period == 0: max_period = 8
 
     cols = st.columns([2] + [1] * max_period)
@@ -276,18 +326,24 @@ def ui_arrange():
         cols = st.columns([2] + [1] * max_period)
         cols[0].write(absent)
         periods = st.session_state.schedule.get(absent, {}).get(day, {})
-
+        
         for p in range(1, max_period + 1):
             p_str = str(p)
             with cols[p]:
                 if p_str in periods:
                     c_name = periods[p_str]
                     st.caption(c_name)
+                    
                     state_key = (absent, p_str)
                     candidates = compute_candidates(p_str, c_name, absent, day_schedule)
+                    
                     current_val = st.session_state.arrangements.get(state_key, "Self Study")
-
-                    idx = next((i for i, cand in enumerate(candidates) if cand.split(' (')[0] == current_val.split(' (')[0]), 0)
+                    
+                    idx = 0
+                    for i, cand in enumerate(candidates):
+                        if cand.split(' (')[0] == current_val.split(' (')[0]:
+                            idx = i; break
+                            
                     sel = st.selectbox("Substitute", candidates, index=idx, key=f"sel_{absent}_{p}", label_visibility="collapsed")
                     st.session_state.arrangements[state_key] = sel
                 else:
@@ -303,13 +359,14 @@ def generate_excel():
     day = st.session_state.selected_day
     max_period = st.session_state.max_period
     period_columns = [str(i) for i in range(1, max_period + 1)]
-
+    
     arrangements_mapped = {a: {} for a in st.session_state.absent_teachers}
     detailed_assignments = {t: {} for t in st.session_state.schedule.keys() if t not in st.session_state.absent_teachers}
 
     for (absent, p), selection in st.session_state.arrangements.items():
         c_name = st.session_state.schedule[absent][day][p]
-        if selection == "Self Study": arrangements_mapped[absent][p] = f"{c_name} - Self Study"
+        if selection == "Self Study":
+            arrangements_mapped[absent][p] = f"{c_name} - Self Study"
         elif "(Co-teacher)" in selection:
             sub_name = selection.split(" (")[0]
             arrangements_mapped[absent][p] = f"{c_name} - {sub_name} (Co-teacher)"
@@ -324,11 +381,16 @@ def generate_excel():
             arrangements_mapped[absent][p] = f"{c_name} - {sub_name}"
             detailed_assignments[sub_name][p] = f"{c_name} (Arrangement)"
 
-    data1 = [{"Absent Teacher": a, **{f"Period {p}": arrangements_mapped[a].get(p, "") if p in st.session_state.schedule[a].get(day, {}) else "" for p in period_columns}} for a in sorted(arrangements_mapped.keys())]
+    data1 = []
+    for absent in sorted(arrangements_mapped.keys()):
+        row = {"Absent Teacher": absent}
+        for p in period_columns:
+            row[f"Period {p}"] = arrangements_mapped[absent].get(p, "") if p in st.session_state.schedule[absent].get(day, {}) else ""
+        data1.append(row)
     df1 = pd.DataFrame(data1)
 
-    active_subs = [t for t, assigns in detailed_assignments.items() if assigns]
     data2 = []
+    active_subs = [t for t, assigns in detailed_assignments.items() if assigns]
     for sub in sorted(active_subs):
         row = {"Substitute Teacher": sub}
         engaged_count = 0
@@ -339,29 +401,43 @@ def generate_excel():
             elif p in st.session_state.schedule[sub].get(day, {}):
                 row[f"Period {p}"] = st.session_state.schedule[sub][day][p]
                 engaged_count += 1
-            else: row[f"Period {p}"] = "Free"
-        row["Total Engaged"], row["Total Free"] = engaged_count, max_period - engaged_count
+            else:
+                row[f"Period {p}"] = "Free"
+        row["Total Engaged"] = engaged_count
+        row["Total Free"] = max_period - engaged_count
         data2.append(row)
     df2 = pd.DataFrame(data2)
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df1.to_excel(writer, sheet_name='Daily Arrangement', index=False)
+        df1.to_excel(writer, sheet_name='Daily Arrangement', index=False, startrow=0)
+        table2_start = len(df1) + 3 
         if not df2.empty:
-            writer.sheets['Daily Arrangement'].cell(row=len(df1) + 3, column=1, value="SUBSTITUTE TEACHER DAILY SCHEDULES (Printable)")
-            df2.to_excel(writer, sheet_name='Daily Arrangement', index=False, startrow=len(df1) + 3)
+            worksheet = writer.sheets['Daily Arrangement']
+            worksheet.cell(row=table2_start, column=1, value="SUBSTITUTE TEACHER DAILY SCHEDULES (Printable)")
+            df2.to_excel(writer, sheet_name='Daily Arrangement', index=False, startrow=table2_start)
+    
     return output.getvalue()
 
 def ui_export():
+    sidebar_menu()
     st.title("Export Complete!")
     st.success("Your schedule has been calculated successfully.")
-
+    
     excel_data = generate_excel()
-    file_name = f"Arrangement_{st.session_state.selected_day.capitalize()}_{get_target_date(st.session_state.selected_day)}.xlsx"
-
-    st.download_button("Download Excel File", data=excel_data, file_name=file_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+    target_date = get_target_date(st.session_state.selected_day)
+    file_name = f"Arrangement_{st.session_state.selected_day.capitalize()}_{target_date}.xlsx"
+    
+    st.download_button(
+        label="Download Excel File",
+        data=excel_data,
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
+    
     st.divider()
-    if st.button("Start New Arrangement"):
+    if st.button("Start New Arrangement (Same Schedule)"):
         st.session_state.phase = 'setup'
         st.session_state.arrangements = {}
         st.rerun()
