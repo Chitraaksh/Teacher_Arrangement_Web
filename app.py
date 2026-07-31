@@ -10,7 +10,7 @@ from datetime import date, timedelta
 # ==========================================
 # CONFIGURATION & CONSTANTS
 # ==========================================
-st.set_page_config(page_title="Teacher Arrangement System", page_icon="🏫", layout="wide")
+st.set_page_config(page_title="Teacher Arrangement System", layout="wide")
 
 # Inject Custom CSS for Dropdown text wrapping and breadth
 st.markdown("""
@@ -358,6 +358,40 @@ def ui_arrange():
     day = st.session_state.selected_day
     st.title(f"Make Arrangements ({day.capitalize()})")
     
+    # Matrix Layout CSS injected exclusively for the Arrangement phase
+    st.markdown("""
+        <style>
+        /* Force rows to not wrap, creating horizontal overflow */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            gap: 0 !important; 
+        }
+        
+        /* Uniform dimensions for every column cell in the matrix */
+        [data-testid="column"] {
+            min-width: 320px !important;
+            max-width: 320px !important;
+            flex: 0 0 320px !important;
+            padding: 15px 15px !important;
+            border-right: 1px solid #d3d3d3 !important;
+            border-bottom: 1px solid #d3d3d3 !important;
+        }
+        
+        /* Add left border to the first column to close the grid */
+        [data-testid="column"]:first-child {
+            border-left: 1px solid #d3d3d3 !important;
+            background-color: #f7f9fc;
+        }
+        
+        /* Center the text in empty cells */
+        .empty-cell {
+            text-align: center;
+            color: #a0a0a0;
+            margin-top: 15px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     day_schedule = {}
     max_period = 0
     for t, t_data in st.session_state.schedule.items():
@@ -370,44 +404,55 @@ def ui_arrange():
                 
     if max_period == 0: max_period = 8
 
-    # Adjusted weights: Gives Period columns a slightly larger share of the screen vs the Absent Teacher column
-    cols = st.columns([1.5] + [1.2] * max_period)
-    cols[0].markdown("**Absent Teacher**")
-    for p in range(1, max_period + 1): cols[p].markdown(f"**Period {p}**")
+    st.info("**Scroll horizontally and vertically** to view and assign all periods. All cells are uniformly sized.")
 
-    for absent in st.session_state.absent_teachers:
-        cols = st.columns([1.5] + [1.2] * max_period)
-        cols[0].write(absent)
-        periods = st.session_state.schedule.get(absent, {}).get(day, {})
-        
-        for p in range(1, max_period + 1):
-            p_str = str(p)
-            with cols[p]:
-                if p_str in periods:
-                    c_name = periods[p_str]
-                    st.caption(c_name)
-                    
-                    state_key = (absent, p_str)
-                    candidates = compute_candidates(p_str, c_name, absent, day_schedule)
-                    
-                    current_val = st.session_state.arrangements.get(state_key, "Self Study")
-                    
-                    idx = 0
-                    for i, cand in enumerate(candidates):
-                        if cand.split(' (')[0] == current_val.split(' (')[0]:
-                            idx = i; break
-                            
-                    sel = st.selectbox("Substitute", candidates, index=idx, key=f"sel_{absent}_{p}", label_visibility="collapsed")
-                    
-                    # If selection changed, instantly save it and trigger a rerun so subsequent dropdowns update
-                    if st.session_state.arrangements.get(state_key) != sel:
-                        st.session_state.arrangements[state_key] = sel
-                        st.rerun()
-                else:
-                    st.write("-")
+    # Matrix Container with fixed height for vertical and horizontal scrolling
+    with st.container(height=650):
+        # Header Row
+        cols = st.columns(max_period + 1)
+        cols[0].markdown("### Absent Teacher")
+        for p in range(1, max_period + 1): 
+            cols[p].markdown(f"### Period {p}")
+
+        # Data Rows
+        for absent in st.session_state.absent_teachers:
+            cols = st.columns(max_period + 1)
+            
+            # Column 0: Absent Teacher Name
+            cols[0].markdown(f"**{absent}**")
+            
+            periods = st.session_state.schedule.get(absent, {}).get(day, {})
+            
+            # Column 1 to N: Periods
+            for p in range(1, max_period + 1):
+                p_str = str(p)
+                with cols[p]:
+                    if p_str in periods:
+                        c_name = periods[p_str]
+                        st.caption(f"**Class:** {c_name}")
+                        
+                        state_key = (absent, p_str)
+                        candidates = compute_candidates(p_str, c_name, absent, day_schedule)
+                        
+                        current_val = st.session_state.arrangements.get(state_key, "Self Study")
+                        
+                        idx = 0
+                        for i, cand in enumerate(candidates):
+                            if cand.split(' (')[0] == current_val.split(' (')[0]:
+                                idx = i; break
+                                
+                        sel = st.selectbox("Substitute", candidates, index=idx, key=f"sel_{absent}_{p}", label_visibility="collapsed")
+                        
+                        # If selection changed, instantly save it and trigger a rerun so subsequent dropdowns update
+                        if st.session_state.arrangements.get(state_key) != sel:
+                            st.session_state.arrangements[state_key] = sel
+                            st.rerun()
+                    else:
+                        # Replaces the basic '-' with a visually styled empty block
+                        st.markdown('<div class="empty-cell">— Free —</div>', unsafe_allow_html=True)
 
     st.divider()
-    if st.button("Finalize & Export", type="primary"):
+    if st.button("Finalize & Export", type="primary", use_container_width=True):
         st.session_state.max_period = max_period
         st.session_state.phase = 'export'
         st.rerun()
