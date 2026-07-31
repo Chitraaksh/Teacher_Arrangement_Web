@@ -12,6 +12,37 @@ from datetime import date, timedelta
 # ==========================================
 st.set_page_config(page_title="Teacher Arrangement System", page_icon="🏫", layout="wide")
 
+# Inject Custom CSS for Dropdown text wrapping and breadth
+st.markdown("""
+    <style>
+    /* 1. Force text wrapping inside the selected option of the selectbox */
+    div[data-baseweb="select"] > div, div[data-baseweb="select"] span {
+        white-space: normal !important;
+        word-break: break-word !important;
+        height: auto !important;
+        min-height: 38px !important;
+    }
+    
+    /* 2. Force text wrapping inside the dropdown list options */
+    ul[role="listbox"] li {
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
+        height: auto !important;
+        padding-top: 10px !important;
+        padding-bottom: 10px !important;
+        line-height: 1.4 !important;
+        border-bottom: 1px solid #f0f2f6; /* Adds a faint line between options for readability */
+    }
+    
+    /* 3. Reduce column padding to give selectboxes more horizontal space (breadth) */
+    [data-testid="column"] {
+        padding-left: 0.3rem !important;
+        padding-right: 0.3rem !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 DAYS_MAP = {
     '1': 'monday', '2': 'tuesday', '3': 'wednesday', 
     '4': 'thursday', '5': 'friday', '6': 'saturday'
