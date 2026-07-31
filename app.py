@@ -370,9 +370,9 @@ def ui_arrange():
         
         /* Uniform dimensions for every column cell in the matrix */
         [data-testid="column"] {
-            min-width: 370px !important;
-            max-width: 370px !important;
-            flex: 0 0 370px !important;
+            min-width: 470px !important;
+            max-width: 470px !important;
+            flex: 0 0 470px !important;
             padding: 15px 15px !important;
             border-right: 1px solid #d3d3d3 !important;
             border-bottom: 1px solid #d3d3d3 !important;
